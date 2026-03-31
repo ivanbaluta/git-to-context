@@ -24,28 +24,63 @@ import markdown
 
 MAX_DEFAULT_BYTES = 50 * 1024
 BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico",
-    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
-    ".mp3", ".mp4", ".mov", ".avi", ".mkv", ".wav", ".ogg", ".flac",
-    ".ttf", ".otf", ".eot", ".woff", ".woff2",
-    ".so", ".dll", ".dylib", ".class", ".jar", ".exe", ".bin",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".mp3",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".wav",
+    ".ogg",
+    ".flac",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".woff",
+    ".woff2",
+    ".so",
+    ".dll",
+    ".dylib",
+    ".class",
+    ".jar",
+    ".exe",
+    ".bin",
 }
 MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd", ".mkdn"}
+
 
 @dataclass
 class RenderDecision:
     include: bool
     reason: str  # "ok" | "binary" | "too_large" | "ignored"
 
+
 @dataclass
 class FileInfo:
     path: pathlib.Path  # absolute path on disk
-    rel: str            # path relative to repo root (slash-separated)
+    rel: str  # path relative to repo root (slash-separated)
     size: int
     decision: RenderDecision
 
 
-def run(cmd: List[str], cwd: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def run(
+    cmd: List[str], cwd: str | None = None, check: bool = True
+) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
 
@@ -95,7 +130,9 @@ def looks_binary(path: pathlib.Path) -> bool:
         return True
 
 
-def decide_file(path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int) -> FileInfo:
+def decide_file(
+    path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int
+) -> FileInfo:
     rel = str(path.relative_to(repo_root)).replace(os.sep, "/")
     try:
         size = path.stat().st_size
@@ -111,43 +148,72 @@ def decide_file(path: pathlib.Path, repo_root: pathlib.Path, max_bytes: int) -> 
     return FileInfo(path, rel, size, RenderDecision(True, "ok"))
 
 
+def get_git_files(repo_root: pathlib.Path) -> List[pathlib.Path]:
+    """
+    Retrieve a list of repository files using git, respecting .gitignore.
+    Falls back to a recursive glob if not in a git repository.
+    """
+    try:
+        # --cached: tracked files
+        # --others: untracked files
+        # --exclude-standard: respect .gitignore
+        # -z: zero-byte separated output
+        cp = run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=str(repo_root),
+        )
+        rel_paths = [p for p in cp.stdout.split("\0") if p]
+        return [repo_root / p for p in rel_paths]
+    except Exception:
+        # Fallback for non-git directories
+        return [
+            p for p in repo_root.rglob("*") if p.is_file() and ".git" not in p.parts
+        ]
+
+
 def collect_files(repo_root: pathlib.Path, max_bytes: int) -> List[FileInfo]:
+    """Collect and classify all valid files in the repository."""
     infos: List[FileInfo] = []
-    for p in sorted(repo_root.rglob("*")):
-        if p.is_symlink():
+    file_paths = get_git_files(repo_root)
+
+    for p in file_paths:
+        if p.is_symlink() or not p.is_file():
             continue
-        if p.is_file():
-            infos.append(decide_file(p, repo_root, max_bytes))
+        infos.append(decide_file(p, repo_root, max_bytes))
+
+    infos.sort(key=lambda x: x.rel)
     return infos
 
 
-def generate_tree_fallback(root: pathlib.Path) -> str:
-    """Minimal tree-like output if `tree` command is missing."""
-    lines: List[str] = []
-    prefix_stack: List[str] = []
+def generate_tree_from_infos(infos: List[FileInfo], root_name: str) -> str:
+    """
+    Generate an ASCII directory tree based only on the files that passed filtering.
+    """
+    if not infos:
+        return f"{root_name}\n└── (empty)"
 
-    def walk(dir_path: pathlib.Path, prefix: str = ""):
-        entries = [e for e in dir_path.iterdir() if e.name != ".git"]
-        entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
-        for i, e in enumerate(entries):
-            last = i == len(entries) - 1
-            branch = "└── " if last else "├── "
-            lines.append(prefix + branch + e.name)
-            if e.is_dir():
-                extension = "    " if last else "│   "
-                walk(e, prefix + extension)
+    tree_dict = {}
+    for info in infos:
+        parts = info.rel.split("/")
+        current = tree_dict
+        for part in parts:
+            current = current.setdefault(part, {})
 
-    lines.append(root.name)
-    walk(root)
+    lines = [root_name]
+
+    def walk(node: dict, prefix: str = ""):
+        # Sort entries: directories (having children) first, then files alphabetically
+        entries = sorted(node.items(), key=lambda x: (not bool(x[1]), x[0].lower()))
+        for i, (name, children) in enumerate(entries):
+            is_last = i == len(entries) - 1
+            branch = "└── " if is_last else "├── "
+            lines.append(prefix + branch + name)
+            if children:
+                extension = "    " if is_last else "│   "
+                walk(children, prefix + extension)
+
+    walk(tree_dict)
     return "\n".join(lines)
-
-
-def try_tree_command(root: pathlib.Path) -> str:
-    try:
-        cp = run(["tree", "-a", "."], cwd=str(root))
-        return cp.stdout
-    except Exception:
-        return generate_tree_fallback(root)
 
 
 def read_text(path: pathlib.Path) -> str:
@@ -200,19 +266,23 @@ def generate_cxml_text(infos: List[FileInfo], repo_dir: pathlib.Path) -> str:
     return "\n".join(lines)
 
 
-def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]) -> str:
+def build_html(
+    repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]
+) -> str:
     formatter = HtmlFormatter(nowrap=False)
-    pygments_css = formatter.get_style_defs('.highlight')
+    pygments_css = formatter.get_style_defs(".highlight")
 
     # Stats
     rendered = [i for i in infos if i.decision.include]
     skipped_binary = [i for i in infos if i.decision.reason == "binary"]
     skipped_large = [i for i in infos if i.decision.reason == "too_large"]
     skipped_ignored = [i for i in infos if i.decision.reason == "ignored"]
-    total_files = len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_ignored)
+    total_files = (
+        len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_ignored)
+    )
 
     # Directory tree
-    tree_text = try_tree_command(repo_dir)
+    tree_text = generate_tree_from_infos(infos, repo_dir.name)
 
     # Generate CXML text for LLM view
     cxml_text = generate_cxml_text(infos, repo_dir)
@@ -241,7 +311,9 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
                 code_html = highlight_code(text, i.rel, formatter)
                 body_html = f'<div class="highlight">{code_html}</div>'
         except Exception as e:
-            body_html = f'<pre class="error">Failed to render: {html.escape(str(e))}</pre>'
+            body_html = (
+                f'<pre class="error">Failed to render: {html.escape(str(e))}</pre>'
+            )
         sections.append(f"""
 <section class="file-section" id="file-{anchor}">
   <h2>{html.escape(i.rel)} <span class="muted">({bytes_human(i.size)})</span></h2>
@@ -264,10 +336,9 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
             f"<ul class='skip-list'>\n" + "\n".join(lis) + "\n</ul></details>"
         )
 
-    skipped_html = (
-        render_skip_list("Skipped binaries", skipped_binary) +
-        render_skip_list("Skipped large files", skipped_large)
-    )
+    skipped_html = render_skip_list(
+        "Skipped binaries", skipped_binary
+    ) + render_skip_list("Skipped large files", skipped_large)
 
     # HTML with left sidebar TOC
     return f"""
@@ -412,7 +483,7 @@ def build_html(repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: L
         {skipped_html}
       </section>
 
-      {''.join(sections)}
+      {"".join(sections)}
     </div>
 
     <div id="llm-view">
@@ -458,10 +529,10 @@ function showLLMView() {{
 def derive_temp_output_path(repo_url: str) -> pathlib.Path:
     """Derive a temporary output path from the repo URL."""
     # Extract repo name from URL like https://github.com/owner/repo or https://github.com/owner/repo.git
-    parts = repo_url.rstrip('/').split('/')
+    parts = repo_url.rstrip("/").split("/")
     if len(parts) >= 2:
         repo_name = parts[-1]
-        if repo_name.endswith('.git'):
+        if repo_name.endswith(".git"):
             repo_name = repo_name[:-4]
         filename = f"{repo_name}.html"
     else:
@@ -471,34 +542,69 @@ def derive_temp_output_path(repo_url: str) -> pathlib.Path:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Flatten a GitHub repo to a single HTML page")
-    ap.add_argument("repo_url", help="GitHub repo URL (https://github.com/owner/repo[.git])")
-    ap.add_argument("-o", "--out", help="Output HTML file path (default: temporary file derived from repo name)")
-    ap.add_argument("--max-bytes", type=int, default=MAX_DEFAULT_BYTES, help="Max file size to render (bytes); larger files are listed but skipped")
-    ap.add_argument("--no-open", action="store_true", help="Don't open the HTML file in browser after generation")
+    ap = argparse.ArgumentParser(
+        description="Flatten a GitHub repo or local directory to a single HTML page"
+    )
+    ap.add_argument("source", help="GitHub repo URL or local directory path")
+    ap.add_argument(
+        "-o", "--out", help="Output HTML file path (default: temporary file)"
+    )
+    ap.add_argument(
+        "--max-bytes",
+        type=int,
+        default=MAX_DEFAULT_BYTES,
+        help="Max file size to render",
+    )
+    ap.add_argument(
+        "--no-open", action="store_true", help="Don't open the HTML file in browser"
+    )
     args = ap.parse_args()
 
-    # Set default output path if not provided
-    if args.out is None:
-        args.out = str(derive_temp_output_path(args.repo_url))
+    is_url = args.source.startswith(("http://", "https://", "git@"))
+    tmpdir = None
 
-    tmpdir = tempfile.mkdtemp(prefix="flatten_repo_")
-    repo_dir = pathlib.Path(tmpdir, "repo")
+    if is_url:
+        tmpdir = tempfile.mkdtemp(prefix="flatten_repo_")
+        repo_dir = pathlib.Path(tmpdir, "repo")
+        repo_name = args.source.rstrip("/").split("/")[-1].replace(".git", "")
+
+        print(
+            f"📁 Cloning {args.source} to temporary directory: {repo_dir}",
+            file=sys.stderr,
+        )
+        git_clone(args.source, str(repo_dir))
+    else:
+        repo_dir = pathlib.Path(args.source).resolve()
+        if not repo_dir.is_dir():
+            print(f"❌ Error: Directory {repo_dir} does not exist.", file=sys.stderr)
+            return 1
+        repo_name = repo_dir.name
+        print(f"📁 Using local directory: {repo_dir}", file=sys.stderr)
+
+    if args.out is None:
+        args.out = str(pathlib.Path(tempfile.gettempdir()) / f"{repo_name}.html")
 
     try:
-        print(f"📁 Cloning {args.repo_url} to temporary directory: {repo_dir}", file=sys.stderr)
-        git_clone(args.repo_url, str(repo_dir))
         head = git_head_commit(str(repo_dir))
-        print(f"✓ Clone complete (HEAD: {head[:8]})", file=sys.stderr)
+        status_msg = (
+            f"✓ Ready (HEAD: {head[:8]})"
+            if head != "(unknown)"
+            else "✓ Ready (Not a git repo or no commits)"
+        )
+        print(status_msg, file=sys.stderr)
 
         print(f"📊 Scanning files in {repo_dir}...", file=sys.stderr)
         infos = collect_files(repo_dir, args.max_bytes)
         rendered_count = sum(1 for i in infos if i.decision.include)
         skipped_count = len(infos) - rendered_count
-        print(f"✓ Found {len(infos)} files total ({rendered_count} will be rendered, {skipped_count} skipped)", file=sys.stderr)
+        print(
+            f"✓ Found {len(infos)} files total ({rendered_count} will be rendered, {skipped_count} skipped)",
+            file=sys.stderr,
+        )
 
         print(f"🔨 Generating HTML...", file=sys.stderr)
-        html_out = build_html(args.repo_url, repo_dir, head, infos)
+        display_name = args.source if is_url else str(repo_dir.resolve())
+        html_out = build_html(display_name, repo_dir, head, infos)
 
         out_path = pathlib.Path(args.out)
         print(f"💾 Writing HTML file: {out_path.resolve()}", file=sys.stderr)
@@ -510,10 +616,12 @@ def main() -> int:
             print(f"🌐 Opening {out_path} in browser...", file=sys.stderr)
             webbrowser.open(f"file://{out_path.resolve()}")
 
-        print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
         return 0
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        # Cleanup is only required for remote repositories
+        if tmpdir is not None:
+            print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
