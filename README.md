@@ -1,55 +1,39 @@
-# rendergit
+# git-to-context (gtc)
 
-> Just show me the code.
-
-Tired of clicking around complex file hierarchies of GitHub repos? Do you just want to see all of the code on a single page? Enter `rendergit`. Flatten any GitHub repository into a single, static HTML page with syntax highlighting, markdown rendering, and a clean sidebar navigation. Perfect for code review, exploration, and an instant Ctrl+F experience.
-
-## Basic usage
-
-Install and use easily with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv tool install git+https://github.com/karpathy/rendergit
-rendergit https://github.com/karpathy/nanogpt
-```
-
-Alternatively, more manual pip install example:
-
-```bash
-git clone https://github.com/karpathy/rendergit
-cd rendergit
-pip install -e .
-rendergit https://github.com/karpathy/nanoGPT
-```
-
-The code will:
-1. Clone the repo to a temporary directory
-2. Render its source code into a single static temporary HTML file
-3. Automatically open the file in your browser
-
-Once open, you can toggle between two views:
-- **👤 Human View**: Browse with syntax highlighting, sidebar navigation, visual goodies
-- **🤖 LLM View**: Copy the entire codebase as CXML text to paste into Claude, ChatGPT, etc.
-
-There's a few other smaller options, see the code.
+`git-to-context` is a command-line tool that flattens any GitHub repository or **local directory** into a single, structured context file. It generates a static HTML page designed for both humans (easy skimming) and LLMs (structured CXML format).
 
 ## Features
 
-- **Dual view modes** - toggle between Human and LLM views
-  - **👤 Human View**: Pretty interface with syntax highlighting and navigation
-  - **🤖 LLM View**: Raw CXML text format - perfect for copying to Claude/ChatGPT for code analysis
-- **Syntax highlighting** for code files via Pygments
-- **Markdown rendering** for README files and docs
-- **Smart filtering** - skips binaries and oversized files
-- **Directory tree** overview at the top
-- **Sidebar navigation** with file links and sizes
-- **Responsive design** that works on mobile
-- **Search-friendly** - use Ctrl+F to find anything across all files
+- **Local & Remote support**: Works with GitHub URLs or local paths (`gtc .`).
+- **Git-aware filtering**: Automatically respects `.gitignore` rules and skips binary/oversized files.
+- **Dual view modes**:
+  - **👤 Human View**: Pretty interface with syntax highlighting and navigation.
+  - **🤖 LLM View**: Raw CXML format optimized for copy-pasting into LLMs for deep code analysis.
+- **Clean directory tree**: Generates an ASCII tree representing only the files included in the context.
+- **Search-friendly**: Single-page layout makes "Ctrl+F" across the entire codebase instant.
 
-## Contributing
+## Installation
 
-I vibe coded this utility a few months ago but I keep using it very often so I figured I'd just share it. I don't super intend to maintain or support it though.
+```bash
+git clone https://github.com/ivanbaluta/git-to-context.git
+cd git-to-context
+pip install -e .
+```
 
-## License
+## Usage
 
-BSD0 go nuts
+### Flatten a local project (instant):
+```bash
+gtc .
+```
+
+### Flatten a GitHub repository:
+```bash
+gtc https://github.com/karpathy/nanoGPT
+```
+
+## Credits & License
+
+Based on the original [rendergit](https://github.com/karpathy/rendergit) by Andrej Karpathy.
+
+License: [0BSD](LICENSE)
