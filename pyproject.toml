@@ -3,12 +3,13 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rendergit"
+name = "git-to-context"
 version = "0.1.0"
-description = "Flatten a GitHub repo into a single static HTML page for fast skimming and Ctrl+F"
+description = "Flatten any git repo or local directory into a single static HTML page for humans or LLMs"
 readme = "README.md"
 license = "0BSD"
 authors = [
+    {name = "Ivan Baluta", email = "ivanbaluta.dev@gmail.com"},
     {name = "Andrej Karpathy"},
 ]
 requires-python = ">=3.10"
@@ -27,8 +28,9 @@ classifiers = [
 ]
 
 [project.scripts]
-rendergit = "rendergit:main"
+gtc = "git_to_context:main"
+git-to-context = "git_to_context:main"
 
 [project.urls]
-Homepage = "https://github.com/karpathy/rendergit"
-Repository = "https://github.com/karpathy/rendergit"
+Homepage = "https://github.com/ivanbaluta/git-to-context"
+Repository = "https://github.com/ivanbaluta/git-to-context"
