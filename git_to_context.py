@@ -84,8 +84,13 @@ def run(
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
 
-def git_clone(url: str, dst: str) -> None:
-    run(["git", "clone", "--depth", "1", url, dst])
+def git_clone(url: str, dst: str, ref: str | None = None) -> None:
+    """Clone a git repository, optionally at a specific branch or tag."""
+    cmd = ["git", "clone", "--depth", "1"]
+    if ref:
+        cmd.extend(["--branch", ref])
+    cmd.extend([url, dst])
+    run(cmd)
 
 
 def git_head_commit(repo_dir: str) -> str:
@@ -547,6 +552,11 @@ def main() -> int:
     )
     ap.add_argument("source", help="GitHub repo URL or local directory path")
     ap.add_argument(
+        "-r",
+        "--ref",
+        help="Specific branch, tag, or commit to render (e.g., main, v1.0.0, a1b2c3d)",
+    )
+    ap.add_argument(
         "-o", "--out", help="Output HTML file path (default: temporary file)"
     )
     ap.add_argument(
@@ -561,18 +571,36 @@ def main() -> int:
     args = ap.parse_args()
 
     is_url = args.source.startswith(("http://", "https://", "git@"))
+    needs_clone = is_url or args.ref is not None
     tmpdir = None
 
-    if is_url:
+    if needs_clone:
         tmpdir = tempfile.mkdtemp(prefix="flatten_repo_")
         repo_dir = pathlib.Path(tmpdir, "repo")
-        repo_name = args.source.rstrip("/").split("/")[-1].replace(".git", "")
 
-        print(
-            f"📁 Cloning {args.source} to temporary directory: {repo_dir}",
-            file=sys.stderr,
-        )
-        git_clone(args.source, str(repo_dir))
+        if is_url:
+            repo_name = args.source.rstrip("/").split("/")[-1].replace(".git", "")
+            print(
+                f"📁 Cloning {args.source} (ref: {args.ref or 'HEAD'}) to temporary directory...",
+                file=sys.stderr,
+            )
+            git_clone(args.source, str(repo_dir), args.ref)
+        else:
+            repo_dir_source = pathlib.Path(args.source).resolve()
+            if not repo_dir_source.is_dir():
+                print(
+                    f"❌ Error: Directory {repo_dir_source} does not exist.",
+                    file=sys.stderr,
+                )
+                return 1
+            repo_name = repo_dir_source.name
+
+            print(
+                f"📁 Cloning local repo to temporary directory to checkout ref '{args.ref}'...",
+                file=sys.stderr,
+            )
+            run(["git", "clone", str(repo_dir_source), str(repo_dir)])
+            run(["git", "checkout", args.ref], cwd=str(repo_dir))
     else:
         repo_dir = pathlib.Path(args.source).resolve()
         if not repo_dir.is_dir():
