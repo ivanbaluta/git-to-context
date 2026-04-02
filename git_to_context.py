@@ -84,9 +84,13 @@ def run(
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
 
-def git_clone(url: str, dst: str, ref: str | None = None) -> None:
-    """Clone a git repository, optionally at a specific branch or tag."""
-    cmd = ["git", "clone", "--depth", "1"]
+def git_clone(
+    url: str, dst: str, ref: str | None = None, full_history: bool = False
+) -> None:
+    """Clone a git repository, optionally at a specific branch or with full history for diffing."""
+    cmd = ["git", "clone"]
+    if not full_history:
+        cmd.extend(["--depth", "1"])
     if ref:
         cmd.extend(["--branch", ref])
     cmd.extend([url, dst])
@@ -176,10 +180,40 @@ def get_git_files(repo_root: pathlib.Path) -> List[pathlib.Path]:
         ]
 
 
-def collect_files(repo_root: pathlib.Path, max_bytes: int) -> List[FileInfo]:
-    """Collect and classify all valid files in the repository."""
+def get_changed_files(repo_root: pathlib.Path, diff_ref: str) -> List[pathlib.Path]:
+    """Get list of modified or added files compared to a specific ref."""
+    try:
+        # --diff-filter=ACMR excludes deleted files since we can't read their contents anyway
+        cp = run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", diff_ref],
+            cwd=str(repo_root),
+        )
+        rel_paths = [p for p in cp.stdout.split("\n") if p.strip()]
+        return [repo_root / p for p in rel_paths]
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to get changed files: {e}", file=sys.stderr)
+        return []
+
+
+def get_patch(repo_root: pathlib.Path, diff_ref: str) -> str:
+    """Get the raw unified git diff patch."""
+    try:
+        cp = run(["git", "diff", diff_ref], cwd=str(repo_root))
+        return cp.stdout
+    except Exception:
+        return ""
+
+
+def collect_files(
+    repo_root: pathlib.Path, max_bytes: int, diff_ref: str | None = None
+) -> List[FileInfo]:
+    """Collect and classify files, optionally filtering only those changed against diff_ref."""
     infos: List[FileInfo] = []
-    file_paths = get_git_files(repo_root)
+
+    if diff_ref:
+        file_paths = get_changed_files(repo_root, diff_ref)
+    else:
+        file_paths = get_git_files(repo_root)
 
     for p in file_paths:
         if p.is_symlink() or not p.is_file():
@@ -248,9 +282,19 @@ def slugify(path_str: str) -> str:
     return "".join(out)
 
 
-def generate_cxml_text(infos: List[FileInfo], repo_dir: pathlib.Path) -> str:
-    """Generate CXML format text for LLM consumption."""
+def generate_cxml_text(
+    infos: List[FileInfo], repo_dir: pathlib.Path, patch_text: str = ""
+) -> str:
+    """Generate CXML format text for LLM consumption, optionally including a git patch."""
     lines = ["<documents>"]
+
+    if patch_text.strip():
+        lines.append('<document index="0">')
+        lines.append("<source>git_diff.patch</source>")
+        lines.append("<document_content>")
+        lines.append(patch_text)
+        lines.append("</document_content>")
+        lines.append("</document>")
 
     rendered = [i for i in infos if i.decision.include]
     for index, i in enumerate(rendered, 1):
@@ -272,7 +316,12 @@ def generate_cxml_text(infos: List[FileInfo], repo_dir: pathlib.Path) -> str:
 
 
 def build_html(
-    repo_url: str, repo_dir: pathlib.Path, head_commit: str, infos: List[FileInfo]
+    source_name: str,
+    repo_dir: pathlib.Path,
+    head_commit: str,
+    infos: List[FileInfo],
+    patch_text: str = "",
+    diff_ref: str = "",
 ) -> str:
     formatter = HtmlFormatter(nowrap=False)
     pygments_css = formatter.get_style_defs(".highlight")
@@ -286,14 +335,29 @@ def build_html(
         len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_ignored)
     )
 
-    # Directory tree
     tree_text = generate_tree_from_infos(infos, repo_dir.name)
+    cxml_text = generate_cxml_text(infos, repo_dir, patch_text)
 
-    # Generate CXML text for LLM view
-    cxml_text = generate_cxml_text(infos, repo_dir)
-
-    # Table of contents
     toc_items: List[str] = []
+    sections: List[str] = []
+
+    if patch_text.strip():
+        try:
+            lexer = get_lexer_for_filename("dummy.diff", stripall=False)
+            code_html = highlight(patch_text, lexer, formatter)
+            sections.append(f"""
+<section class="file-section" id="file-git-patch">
+  <h2>Git Patch <span class="muted">(Changes vs {html.escape(diff_ref)})</span></h2>
+  <div class="file-body"><div class="highlight">{code_html}</div></div>
+  <div class="back-top"><a href="#top">↑ Back to top</a></div>
+</section>
+""")
+            toc_items.append(
+                f'<li><a href="#file-git-patch"><strong>Git Patch</strong></a> <span class="muted">(vs {html.escape(diff_ref)})</span></li>'
+            )
+        except Exception:
+            pass
+
     for i in rendered:
         anchor = slugify(i.rel)
         toc_items.append(
@@ -302,8 +366,6 @@ def build_html(
         )
     toc_html = "".join(toc_items)
 
-    # Render file sections
-    sections: List[str] = []
     for i in rendered:
         anchor = slugify(i.rel)
         p = i.path
@@ -352,7 +414,7 @@ def build_html(
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Flattened repo – {html.escape(repo_url)}</title>
+<title>Flattened repo – {html.escape(source_name)}</title>
 <style>
   body {{
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji';
@@ -458,7 +520,7 @@ def build_html(
 
     <section>
         <div class="meta">
-        <div><strong>Repository:</strong> <a href="{html.escape(repo_url)}">{html.escape(repo_url)}</a></div>
+        <div><strong>Repository:</strong> <a href="{html.escape(source_name)}">{html.escape(source_name)}</a></div>
         <small><strong>HEAD commit:</strong> {html.escape(head_commit)}</small>
         <div class="counts">
             <strong>Total files:</strong> {total_files} · <strong>Rendered:</strong> {len(rendered)} · <strong>Skipped:</strong> {len(skipped_binary) + len(skipped_large) + len(skipped_ignored)}
@@ -531,21 +593,6 @@ function showLLMView() {{
 """
 
 
-def derive_temp_output_path(repo_url: str) -> pathlib.Path:
-    """Derive a temporary output path from the repo URL."""
-    # Extract repo name from URL like https://github.com/owner/repo or https://github.com/owner/repo.git
-    parts = repo_url.rstrip("/").split("/")
-    if len(parts) >= 2:
-        repo_name = parts[-1]
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        filename = f"{repo_name}.html"
-    else:
-        filename = "repo.html"
-
-    return pathlib.Path(tempfile.gettempdir()) / filename
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Flatten a GitHub repo or local directory to a single HTML page"
@@ -555,6 +602,11 @@ def main() -> int:
         "-r",
         "--ref",
         help="Specific branch, tag, or commit to render (e.g., main, v1.0.0, a1b2c3d)",
+    )
+    ap.add_argument(
+        "-d",
+        "--diff",
+        help="Render only changes compared to this ref (e.g., main, HEAD~1)",
     )
     ap.add_argument(
         "-o", "--out", help="Output HTML file path (default: temporary file)"
@@ -584,7 +636,9 @@ def main() -> int:
                 f"📁 Cloning {args.source} (ref: {args.ref or 'HEAD'}) to temporary directory...",
                 file=sys.stderr,
             )
-            git_clone(args.source, str(repo_dir), args.ref)
+            git_clone(
+                args.source, str(repo_dir), args.ref, full_history=bool(args.diff)
+            )
         else:
             repo_dir_source = pathlib.Path(args.source).resolve()
             if not repo_dir_source.is_dir():
@@ -594,7 +648,6 @@ def main() -> int:
                 )
                 return 1
             repo_name = repo_dir_source.name
-
             print(
                 f"📁 Cloning local repo to temporary directory to checkout ref '{args.ref}'...",
                 file=sys.stderr,
@@ -621,8 +674,18 @@ def main() -> int:
         )
         print(status_msg, file=sys.stderr)
 
+        patch_text = ""
+        if args.diff:
+            print(f"🔍 Calculating diff against '{args.diff}'...", file=sys.stderr)
+            patch_text = get_patch(repo_dir, args.diff)
+            if not patch_text.strip():
+                print(
+                    f"ℹ️  No changes found compared to '{args.diff}'.", file=sys.stderr
+                )
+
         print(f"📊 Scanning files in {repo_dir}...", file=sys.stderr)
-        infos = collect_files(repo_dir, args.max_bytes)
+        infos = collect_files(repo_dir, args.max_bytes, args.diff)
+
         rendered_count = sum(1 for i in infos if i.decision.include)
         skipped_count = len(infos) - rendered_count
         print(
@@ -632,7 +695,9 @@ def main() -> int:
 
         print(f"🔨 Generating HTML...", file=sys.stderr)
         display_name = args.source if is_url else str(repo_dir.resolve())
-        html_out = build_html(display_name, repo_dir, head, infos)
+        html_out = build_html(
+            display_name, repo_dir, head, infos, patch_text, args.diff
+        )
 
         out_path = pathlib.Path(args.out)
         print(f"💾 Writing HTML file: {out_path.resolve()}", file=sys.stderr)
@@ -646,9 +711,8 @@ def main() -> int:
 
         return 0
     finally:
-        # Cleanup is only required for remote repositories
         if tmpdir is not None:
-            print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
+            print(f"🗑️  Cleaning directory: {tmpdir}", file=sys.stderr)
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
