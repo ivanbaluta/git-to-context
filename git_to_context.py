@@ -712,7 +712,7 @@ def main() -> int:
         return 0
     finally:
         if tmpdir is not None:
-            print(f"🗑️  Cleaning directory: {tmpdir}", file=sys.stderr)
+            print(f"🗑️  Cleaning up temporary directory: {tmpdir}", file=sys.stderr)
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
