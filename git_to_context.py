@@ -81,7 +81,9 @@ class FileInfo:
 def run(
     cmd: List[str], cwd: str | None = None, check: bool = True
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
+    return subprocess.run(
+        cmd, cwd=cwd, check=check, text=True, capture_output=True, encoding="utf-8"
+    )
 
 
 def git_clone(
