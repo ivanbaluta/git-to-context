@@ -62,6 +62,21 @@ BINARY_EXTENSIONS = {
     ".bin",
 }
 MARKDOWN_EXTENSIONS = {".md", ".markdown", ".mdown", ".mkd", ".mkdn"}
+# Common lock files that consume too many LLM tokens
+LOCK_FILES = {
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile.lock",
+    "Cargo.lock",
+    "Gemfile.lock",
+    "composer.lock",
+    "mix.lock",
+    "flake.lock",
+}
 
 
 @dataclass
@@ -149,13 +164,20 @@ def decide_file(
         size = path.stat().st_size
     except FileNotFoundError:
         size = 0
+
     # Ignore VCS and build junk
     if "/.git/" in f"/{rel}/" or rel.startswith(".git/"):
         return FileInfo(path, rel, size, RenderDecision(False, "ignored"))
+
+    # Ignore lock files
+    if path.name in LOCK_FILES:
+        return FileInfo(path, rel, size, RenderDecision(False, "lock_file"))
+
     if size > max_bytes:
         return FileInfo(path, rel, size, RenderDecision(False, "too_large"))
     if looks_binary(path):
         return FileInfo(path, rel, size, RenderDecision(False, "binary"))
+
     return FileInfo(path, rel, size, RenderDecision(True, "ok"))
 
 
@@ -333,8 +355,13 @@ def build_html(
     skipped_binary = [i for i in infos if i.decision.reason == "binary"]
     skipped_large = [i for i in infos if i.decision.reason == "too_large"]
     skipped_ignored = [i for i in infos if i.decision.reason == "ignored"]
+    skipped_locks = [i for i in infos if i.decision.reason == "lock_file"]
     total_files = (
-        len(rendered) + len(skipped_binary) + len(skipped_large) + len(skipped_ignored)
+        len(rendered)
+        + len(skipped_binary)
+        + len(skipped_large)
+        + len(skipped_ignored)
+        + len(skipped_locks)
     )
 
     tree_text = generate_tree_from_infos(infos, repo_dir.name)
@@ -405,9 +432,11 @@ def build_html(
             f"<ul class='skip-list'>\n" + "\n".join(lis) + "\n</ul></details>"
         )
 
-    skipped_html = render_skip_list(
-        "Skipped binaries", skipped_binary
-    ) + render_skip_list("Skipped large files", skipped_large)
+    skipped_html = (
+        render_skip_list("Skipped binaries", skipped_binary)
+        + render_skip_list("Skipped large files", skipped_large)
+        + render_skip_list("Skipped lock files", skipped_locks)
+    )
 
     # HTML with left sidebar TOC
     return f"""
@@ -525,7 +554,7 @@ def build_html(
         <div><strong>Repository:</strong> <a href="{html.escape(source_name)}">{html.escape(source_name)}</a></div>
         <small><strong>HEAD commit:</strong> {html.escape(head_commit)}</small>
         <div class="counts">
-            <strong>Total files:</strong> {total_files} · <strong>Rendered:</strong> {len(rendered)} · <strong>Skipped:</strong> {len(skipped_binary) + len(skipped_large) + len(skipped_ignored)}
+            <strong>Total files:</strong> {total_files} · <strong>Rendered:</strong> {len(rendered)} · <strong>Skipped:</strong> {len(skipped_binary) + len(skipped_large) + len(skipped_ignored) + len(skipped_locks)}
         </div>
         </div>
     </section>
